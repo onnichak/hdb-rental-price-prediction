@@ -1,0 +1,4 @@
+﻿# Data files are too large for GitHub (over 100 MB)
+data/
+__pycache__/
+.ipynb_checkpoints/
