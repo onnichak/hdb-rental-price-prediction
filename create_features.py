@@ -134,8 +134,8 @@ def pct_rank_unique_blocks(df, value_col, group_col="town"):
 
 
 def add_refined_existing_features(df):
-    """15 features kept from the original hdb_engineered_feature_dictionary.csv.
-    Dropped from that file: hdb_rental_stock_share, small_flat_stock_share (94% zeros),
+    """15 refined versions of earlier candidate features.
+    Dropped candidates: hdb_rental_stock_share, small_flat_stock_share (94% zeros),
     matches_dominant_block_type (5% blank, repeats block_share_this_flat_type),
     rent_month_sin / rent_month_cos (no real seasonality), multiple_mrt_stations_within_800m
     (repeats n_mrt_stations_within_800m), mrt_km_x_1_room (only 61 one-room rows)."""

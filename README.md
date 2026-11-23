@@ -1,80 +1,118 @@
-# Singapore HDB Rental Price Prediction: Feature Engineering
+# Predicting Singapore HDB Rental Prices
 
-**TL;DR:** I engineered 39 features that capture what drives HDB rents but wasn't in the raw data: market timing, location premium, MRT access and building profile. 8 of the model's top 13 predictors are engineered features, and the location-premium features cut a Ridge model's prediction error by **27% ($651 → $478 RMSE)**.
+**TL;DR:** A rent benchmark for 209,610 Singapore HDB rentals that a property agency can use as the starting point for every pricing discussion. On unseen 2026 rentals, the final model is off by **SGD 297 a month on average, 40% less than a simple town-and-flat-type average (SGD 495)**. Most of the gain comes from the features I engineered (recent comparable rents and each block's usual premium), not from a more complex algorithm.
 
-**Tools:** Python · pandas · NumPy
+**Tools:** Python · pandas · NumPy · scikit-learn · XGBoost · SHAP
 
-![Feature engineering framework](figures/01_feature_framework.png)
+![Final model error vs simple benchmark on 2026 rentals](figures/07_final_model_error.png)
 
 ## Business question
 
-What drives the monthly rent of a Singapore HDB flat, and how can we predict it more accurately? Better rent estimates help tenants and landlords judge a fair price, and help planners see where rents are rising fastest.
+Every HDB rental starts with a price. Agents usually set the first asking rent from broad town averages, a few comparable listings or their own judgement, so similar flats can be priced on different assumptions. Pricing too low leaves the landlord's income unrealised, and pricing too high can mean a longer search for a tenant.
+
+**Can public data give agents a consistent, evidence-based "Estimated Market Rent" as a first-pass benchmark?**
 
 ## Dataset
 
-**209,610 HDB rental records from 2021 onwards, with 42 cleaned columns.** The source data is public: HDB rental approvals from data.gov.sg, combined with HDB property information and MRT/LRT exit locations.
+Four public sources, joined at block level:
 
-The cleaned data leaves out much of what drives rent:
+- **HDB rental approvals** (data.gov.sg): 209,852 records, January 2021 to August 2026, 27 towns, 9,720 block addresses
+- **HDB Property Information:** building age, height and flat mix for each block
+- **OneMap:** address coordinates
+- **MRT/LRT exits:** used to measure rail access
 
-- **Market timing:** the median rent rose from about $2,100 to $3,100 between 2021 and 2024, so the same flat costs different amounts in different months.
-- **Location quality:** a flat's view, condition and nearby shops are not recorded.
-- **Building and unit:** there is no floor area or unit storey.
-- **Rail access:** only raw distances are given, and they are stored in metres despite the `_km` column names.
+After cleaning, the modelling file has **209,610 records and 42 columns** with no missing values. Property data matched 99.91% of rental records.
 
 The data files are not included because they are larger than GitHub's 100 MB file limit.
 
-## Approach
+## What the data shows
+
+![Monthly median HDB rent, 2021–2026](figures/05_monthly_median_rent.png)
+
+- **The market moved fast.** The median rent rose from SGD 2,000 (January 2021) to SGD 3,200 (August 2026), mostly during 2022 and early 2023. A price that was fair a year ago may not be fair today.
+- **Location matters within the same flat type.** In 2025 a 4-room flat rented for a median of SGD 4,200 in Central but SGD 3,000 in Woodlands. Rents also differ between blocks and streets in the same town.
+
+![Median rent by town and flat type, 2025](figures/06_rent_by_town_and_flat_type.png)
+
+## My part: feature engineering
+
+The cleaned data leaves out much of what drives rent: the market level at the time of renting, a block's view or condition, floor area and storey, and how good rail access is compared with the rest of the town. I built **39 features** to fill these gaps, using only the 42 cleaned columns and no outside data.
+
+![Feature engineering framework](figures/01_feature_framework.png)
 
 1. **Find the gaps:** check each column against rent and ask what a landlord or tenant uses to set a price that the data doesn't show.
-2. **Draft candidates:** 48 candidate features built only from the 42 cleaned columns, with no outside data.
-3. **Screen them:** keep a feature only if it is relevant to rent, under 5% blank, not a repeat of another column, and built only from earlier months. 9 candidates failed and were dropped.
+2. **Draft candidates:** 48 candidate features in four groups (market timing, location quality, building and unit, rail access).
+3. **Screen them:** keep a feature only if it is relevant to rent, under 5% blank, not a repeat of another column, and **built only from earlier months**, so the model never learns from future rents. 9 candidates failed and were dropped.
 
 ![Feature screening results](figures/02_feature_screening.png)
-
-**What I built (39 features):**
 
 | Group | Examples | Idea |
 |---|---|---|
 | Market level | `ft_median_rent_lag3m`, `town_ft_median_rent_lag6m` | Recent market rent for the same flat type and town |
-| Location premium | `block_ft_past_premium`, `street_past_premium`, `station_past_premium`, `expected_rent_block_ft` | How much a block, street or station area has rented above or below the market in the past |
+| Location premium | `block_ft_past_premium`, `street_past_premium`, `expected_rent_block_ft` | How much a block or street has rented above or below the market in the past |
 | Location | `postal_district`, `mature_estate`, `region` | Standard Singapore location groupings |
-| Rail | `lrt_dependent`, `mrt_dist_rank_in_town`, `rail_access_category` | LRT-only access, and how close a block is to the MRT compared with the rest of its town |
+| Rail | `lrt_dependent`, `mrt_dist_rank_in_town`, `rail_access_category` | LRT-only access, and MRT distance compared with the rest of the town |
 | Building | `remaining_lease_years`, `completion_era`, `floor_rank_in_town` | Lease left, build generation, and height within the town |
 | Rental activity | `block_rentals_past12m`, `town_ft_rentals_lag3m` | How busy the local rental market is |
 
-The full definitions, formulas and reasons for each feature are in [`feature_dictionary.csv`](feature_dictionary.csv) and [`FEATURES.md`](FEATURES.md).
+The full definitions and formulas are in [`feature_dictionary.csv`](feature_dictionary.csv) and [`FEATURES.md`](FEATURES.md), and the code is in [`create_features.py`](create_features.py).
 
-## Model evaluation
+**Example: expected rent.** A 4-room flat at Block 147 Lorong 2 Toa Payoh in January 2024: the typical 4-room rent was about SGD 3,300, and this block had usually rented about 12% above market, so its expected rent was about SGD 3,699. The recorded rent was SGD 3,500.
 
 ![Correlation of each feature with rent](figures/03_correlation_with_rent.png)
 
-- The new market-rent and block-premium features have the strongest links with rent (correlation **0.69 to 0.77**). The best original column, the year of rental, reaches only **0.49**.
-- Adding the location-premium features cut a Ridge model's error from **$651 to $478 RMSE (−27%)**.
+The new market-rent and block-premium features have the strongest links with rent (correlation **0.69 to 0.77**). The best original column reaches only **0.49**.
+
+## Model evaluation
+
+Six models were compared using a time-based split: **trained on 2021–2024, selected on 2025, and tested on January–August 2026**, so every test is on rentals the model has never seen.
+
+| Model | 2025 validation MAE (SGD) | 2026 test MAE (SGD) | 2026 test R² |
+|---|---:|---:|---:|
+| Baseline (town × flat-type median) | 628 | 657 | −0.37 |
+| Linear Regression | 325 | 306 | 0.55 |
+| CART | 337 | 324 | 0.52 |
+| Random Forest | 329 | 319 | 0.54 |
+| Ridge | 324 | 304 | 0.55 |
+| Lasso | 323 | 303 | 0.56 |
+| **XGBoost (selected)** | **323** | 308 | 0.55 |
+
+XGBoost was selected on 2025 validation error and refitted on 2021–2025. The baseline was refitted on the same period for a fair comparison:
+
+| | 2026 MAE (SGD) | |
+|---|---:|---|
+| Simple benchmark (town × flat-type median) | 495 | |
+| **Final XGBoost model** | **297** | **40% lower error**; RMSE 427; R² 0.57 |
+
+**The leading models perform almost the same.** Even plain Linear Regression is within SGD 10 of XGBoost, so the improvement comes mainly from the engineered market and location features, not from model complexity.
 
 ## Key results
 
 ![Engineered features among the model's top predictors](figures/04_top_model_features.png)
 
-- **8 of the model's top 13 predictors are engineered features**, including the top three: expected rent, months since January 2021 and the block premium.
-- **Expected rent alone carries 31% of the model's explanation.** Example: a 4-room flat at Block 147 Lorong 2 Toa Payoh in January 2024. The typical 4-room rent was $3,300, and this block usually rents about 12% above market, so its expected rent is about $3,699. The actual rent was $3,500.
-- Rail, building and rental-activity features are **not** among the top 13, so location and market timing matter far more than MRT distance or building age.
+- **Recent comparable rents drive most of the prediction.** In the final model, my expected-rent feature (recent flat-type rent adjusted by the block's usual premium) accounts for **49% of the model's total SHAP attribution**. Recent town-level rent is next.
+- **Block and street premiums matter.** Street-level premiums and building age add smaller adjustments around the market level.
+- **Accuracy varies by segment.** Errors are lowest in newer, uniform towns such as Punggol (SGD 196) and Sengkang (SGD 220), and highest for Executive flats (SGD 395) and thin markets such as Bukit Timah (SGD 503, only 72 rentals).
 
 ## Recommendation
 
-- **Price from the local market, not the flat alone.** The going rate for the flat type, adjusted by the block's usual premium, predicts rent better than any flat attribute. Tenants and landlords can use this "expected rent" as a fair-price benchmark.
-- **Update estimates often.** Rents moved about 50% in three years, so any rent model needs recent market data to stay accurate.
-- **Collect floor area and storey.** They are the biggest missing drivers. Adding them would likely improve accuracy more than further feature work.
+1. **Pilot the model as the standard first-pass benchmark** for a group of towns, and compare it with the agents' current approach.
+2. **Show a range with a confidence indicator**, not a single figure, based on the observed errors for that segment.
+3. **Keep the data fresh.** Recent comparable rents are the strongest signal, so regular data updates are a core requirement.
+4. **Keep human review for low-confidence cases**, such as Executive flats and towns with few rentals.
+5. **Improve the data before the algorithm.** Floor level, furnishing and renovation condition would likely add more accuracy than a more complex model.
+6. **Measure business outcomes in the pilot**, such as how often agents override the benchmark and how long pricing decisions take.
 
 ## Limitations
 
-- There is no floor area, storey or flat condition in the data, so the block-level features can only approximate them.
-- Blocks with few past rentals have unreliable premiums. They are pulled toward the market average, which reduces noise but can hide real differences.
-- The features show what predicts rent, not what causes it.
-- I built the features. The final model was built by teammates as part of a wider team project.
+- The data has no floor area, floor level, furnishing or condition, so flats in the same block cannot be fully told apart.
+- Rents are owner-declared, and rail access is straight-line distance, not walking time.
+- There is no data on asking prices, vacancy length or days to rent, so the project cannot yet measure the revenue impact.
+- SHAP values show what the model relies on, not what causes rent.
 
 ## How to run
 
-```bash
+```powershell
 pip install pandas numpy
 python create_features.py
 ```
@@ -83,4 +121,4 @@ The script expects the cleaned input at `data/hdb_rentals_clean.csv`.
 
 ## About this project
 
-This was a team rent-prediction project using public Singapore data. I was responsible for the **feature engineering** stage.
+This was a team project for the NTU MSc Business Analytics, written as a pricing-benchmark proposal for a Singapore property agency. **I led the feature engineering stage**: the 39 features, their screening and the leakage checks. Other team members handled the remaining stages, including the final model; its results are shown here because they measure the impact of the features.
